@@ -1,0 +1,69 @@
+// 웹소켓 연결 (로컬 실행 시 ws://localhost:8080)
+const socket = new WebSocket('ws://localhost:8080');
+
+let myRole = null; // 'p1' 또는 'p2'
+let roomCode = null;
+
+socket.onopen = () => {
+    console.log('서버에 연결되었습니다.');
+};
+
+socket.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    switch(data.type) {
+        case 'ROOM_CREATED':
+            roomCode = data.roomCode;
+            myRole = 'p1';
+            alert(`방이 생성되었습니다! 방 코드: ${roomCode} (상대방 접속 대기 중...)`);
+            break;
+
+        case 'ROOM_JOINED':
+            roomCode = data.roomCode;
+            myRole = 'p2';
+            alert(`방 ${roomCode}에 참가했습니다. 대전을 시작합니다!`);
+            break;
+
+        case 'GAME_START':
+            startGame();
+            break;
+
+        case 'OPPONENT_STATE':
+            // 상대방 이동/중력 좌표 업데이트
+            updateOpponentPosition(data.state);
+            break;
+
+        case 'OPPONENT_DISCONNECTED':
+            alert('상대방과의 연결이 끊어졌습니다.');
+            location.reload();
+            break;
+    }
+};
+
+// 방 생성 버튼 이벤트
+function createRoom() {
+    socket.send(JSON.stringify({ type: 'CREATE_ROOM' }));
+}
+
+// 방 참가 버튼 이벤트
+function joinRoom(inputCode) {
+    socket.send(JSON.stringify({ type: 'JOIN_ROOM', roomCode: inputCode }));
+}
+
+// 게임 루프 내부에서 자신의 상태 전송 (초당 30~60회)
+function sendMyState() {
+    if (socket.readyState === WebSocket.OPEN && myRole) {
+        const myPlayer = myRole === 'p1' ? player1 : player2;
+        socket.send(JSON.stringify({
+            type: 'GAME_STATE',
+            state: {
+                x: myPlayer.x,
+                y: myPlayer.y,
+                vx: myPlayer.vx,
+                vy: myPlayer.vy,
+                isPulling: myPlayer.isPulling,
+                isPushing: myPlayer.isPushing
+            }
+        }));
+    }
+}
