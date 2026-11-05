@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>중력 펀치 (Gravity Brawl) - 온라인 대전</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+        body {
+            background-color: #0d0f18;
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        #lobby {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            background: #1a1d2e;
+            padding: 30px 40px;
+            border-radius: 12px;
+            box-shadow: 0 0 20px rgba(138, 43, 226, 0.4);
+            border: 2px solid #8a2be2;
+        }
+        h1 {
+            color: #00ffff;
+            text-shadow: 0 0 10px #00ffff;
+            margin-bottom: 10px;
+        }
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+        input[type="text"] {
+            padding: 10px 15px;
+            border-radius: 6px;
+            border: 1px solid #8a2be2;
+            background: #0d0f18;
+            color: #fff;
+            font-size: 16px;
+            text-align: center;
+            outline: none;
+        }
+        button {
+            padding: 10px 20px;
+            border-radius: 6px;
+            border: none;
+            background: #8a2be2;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: #9d4edd;
+            box-shadow: 0 0 10px #9d4edd;
+        }
+        #game-container {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+        }
+        #hud {
+            display: flex;
+            justify-content: space-between;
+            width: 900px;
+            padding: 10px 20px;
+            font-size: 20px;
+            font-weight: bold;
+            background: #1a1d2e;
+            border-radius: 8px 8px 0 0;
+            border: 1px solid #333;
+            border-bottom: none;
+        }
+        .p1-score { color: #00ffff; }
+        .p2-score { color: #ff007f; }
+        canvas {
+            border: 2px solid #333;
+            background: #05060a;
+            box-shadow: 0 0 30px rgba(0,0,0,0.8);
+        }
+        #status-msg {
+            margin-top: 10px;
+            color: #aaa;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="lobby">
+        <h1>중력 펀치 (Gravity Brawl)</h1>
+        <p>온라인 멀티플레이어 로비</p>
+        <button id="create-btn">새 방 만들기</button>
+        <div style="margin: 10px 0; color: #666;">- 또는 -</div>
+        <div class="input-group">
+            <input type="text" id="room-input" placeholder="방 코드 4자리" maxlength="4">
+            <button id="join-btn">방 참가하기</button>
+        </div>
+        <p id="lobby-status" style="color: #ff9900;"></p>
+    </div>
+
+    <div id="game-container">
+        <div id="hud">
+            <span class="p1-score">P1 (Blue): <span id="p1-score">0</span></span>
+            <span id="room-display" style="color: #888;"></span>
+            <span class="p2-score">P2 (Pink): <span id="p2-score">0</span></span>
+        </div>
+        <canvas id="gameCanvas" width="900" height="600"></canvas>
+        <p id="status-msg">조작법: [W,A,S,D] 이동 | [J] 끌어당기기 | [K] 밀쳐내기</p>
+    </div>
+
+    <script>
+        const lobby = document.getElementById('lobby');
+        const gameContainer = document.getElementById('game-container');
+        const lobbyStatus = document.getElementById('lobby-status');
+        const createBtn = document.getElementById('create-btn');
+        const joinBtn = document.getElementById('join-btn');
+        const roomInput = document.getElementById('room-input');
+        const roomDisplay = document.getElementById('room-display');
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let ws;
+        let myRole = null; // 'p1' or 'p2'
+        let currentRoom = null;
+
+        const ARENA = { x: 450, y: 300, radius: 260 };
+
+        let gameState = {
+            p1: { x: 300, y: 300, vx: 0, vy: 0, isPulling: false, isPushing: false, score: 0 },
+            p2: { x: 600, y: 300, vx: 0, vy: 0, isPulling: false, isPushing: false, score: 0 },
+            boxes: [
+                { x: 400, y: 250, vx: 0, vy: 0, size: 24 },
+                { x: 500, y: 350, vx: 0, vy: 0, size: 24 }
+            ]
+        };
+
+        const keys = {};
+        window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+        window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+        function connectWebSocket() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = location.hostname === 'localhost' || location.hostname === '127.0.0.1' 
+                ? 'ws://localhost:8080' 
+                : `${protocol}//${location.host}`;
+
+            ws = new WebSocket(host);
+
+            ws.onopen = () => {
+                lobbyStatus.textContent = '서버에 연결되었습니다.';
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                switch(data.type) {
+                    case 'ROOM_CREATED':
+                        myRole = 'p1';
+                        currentRoom = data.roomCode;
+                        lobbyStatus.textContent = `방 생성 완료! 코드: ${data.roomCode} (상대 접속 대기 중...)`;
+                        break;
+                    case 'ROOM_JOINED':
+                        myRole = 'p2';
+                        currentRoom = data.roomCode;
+                        lobbyStatus.textContent = `방 ${data.roomCode} 참가 완료! 게임을 시작합니다.`;
+                        break;
+                    case 'GAME_START':
+                        lobby.style.display = 'none';
+                        gameContainer.style.display = 'flex';
+                        roomDisplay.textContent = `ROOM: ${currentRoom} (${myRole.toUpperCase()})`;
+                        requestAnimationFrame(gameLoop);
+                        break;
+                    case 'OPPONENT_STATE':
+                        const oppKey = myRole === 'p1' ? 'p2' : 'p1';
+                        gameState[oppKey] = { ...gameState[oppKey], ...data.state };
+                        if (data.boxes) gameState.boxes = data.boxes;
+                        break;
+                    case 'SCORE_UPDATE':
+                        document.getElementById('p1-score').textContent = data.scores.p1;
+                        document.getElementById('p2-score').textContent = data.scores.p2;
+                        resetPositions();
+                        break;
+                    case 'OPPONENT_DISCONNECTED':
+                        alert('상대방이 게임을 떠났습니다.');
+                        location.reload();
+                        break;
+                    case 'ERROR':
+                        lobbyStatus.textContent = data.message;
+                        break;
+                }
+            };
+
+            ws.onerror = () => {
+                lobbyStatus.textContent = '서버 연결 실패 (ws://localhost:8080 확인 필요)';
+            };
+        }
+
+        createBtn.onclick = () => ws && ws.send(JSON.stringify({ type: 'CREATE_ROOM' }));
+        joinBtn.onclick = () => {
+            const code = roomInput.value.trim();
+            if (code.length === 4) ws && ws.send(JSON.stringify({ type: 'JOIN_ROOM', roomCode: code }));
+        };
+
+        function resetPositions() {
+            gameState.p1.x = 300; gameState.p1.y = 300; gameState.p1.vx = 0; gameState.p1.vy = 0;
+            gameState.p2.x = 600; gameState.p2.y = 300; gameState.p2.vx = 0; gameState.p2.vy = 0;
+        }
+
+        function updateMyPlayer() {
+            if (!myRole) return;
+            const me = gameState[myRole];
+            const speed = 0.6;
+
+            if (keys['w']) me.vy -= speed;
+            if (keys['s']) me.vy += speed;
+            if (keys['a']) me.vx -= speed;
+            if (keys['d']) me.vx += speed;
+
+            me.isPulling = !!keys['j'];
+            me.isPushing = !!keys['k'];
+
+            me.x += me.vx;
+            me.y += me.vy;
+            me.vx *= 0.92;
+            me.vy *= 0.92;
+
+            // Send local player state to host/server
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'GAME_STATE',
+                    state: me
+                }));
+            }
+
+            // Check ring out
+            const distFromCenter = Math.hypot(me.x - ARENA.x, me.y - ARENA.y);
+            if (distFromCenter > ARENA.radius + 15) {
+                const winner = myRole === 'p1' ? 'p2' : 'p1';
+                ws.send(JSON.stringify({ type: 'PLAYER_OUT', winner }));
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Arena Outer Boundary Line (Purple Glow)
+            ctx.beginPath();
+            ctx.arc(ARENA.x, ARENA.y, ARENA.radius, 0, Math.PI * 2);
+            ctx.strokeStyle = '#8a2be2';
+            ctx.lineWidth = 8;
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = '#8a2be2';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // Draw Players
+            drawPlayer(gameState.p1, '#00ffff');
+            drawPlayer(gameState.p2, '#ff007f');
+
+            // Draw Boxes
+            gameState.boxes.forEach(b => {
+                ctx.fillStyle = '#ffcc00';
+                ctx.fillRect(b.x - b.size/2, b.y - b.size/2, b.size, b.size);
+            });
+        }
+
+        function drawPlayer(p, color) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = color;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            if (p.isPulling) {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 80, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(0, 255, 255, 0.4)';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+            if (p.isPushing) {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 80, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 0, 127, 0.4)';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+        }
+
+        function gameLoop() {
+            updateMyPlayer();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        connectWebSocket();
+    </script>
+</body>
+</html>
